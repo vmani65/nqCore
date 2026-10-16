@@ -42,7 +42,14 @@ public interface KiteGateway {
     /** Modify a working LIMIT order's price (and qty). Returns true on success, false on any failure. */
     boolean modifyOrder(String orderId, double newPrice, int newQty, String variety);
 
-    /** Cancel a working order. Returns true on success or if the order was already terminal. */
+    /**
+     * Request cancellation of a working order. Returns true ONLY when Kite accepted the cancel
+     * request. False means the request was rejected or lost — the order may already be terminal
+     * (benign) or may still be working (the 2026-10-07 shape: HTTP 400 "An internal error
+     * occurred" on an OPEN order). The two are indistinguishable from the response, so whatever
+     * this returns the caller must confirm the order's settled state via getOrderHistory before
+     * placing anything else for the same leg.
+     */
     boolean cancelOrder(String orderId, String variety);
 
     /** Fetch status-transition history for an order. Last entry = current state. Returns empty list on failure. */
@@ -54,6 +61,13 @@ public interface KiteGateway {
      * PositionUtil's lost-place-response recovery).
      */
     List<Order> getOrders();
+
+    /**
+     * The account's NET positions (Kite /portfolio/positions "net"): every instrument traded
+     * today or carried overnight, with its signed net quantity. Returns NULL when the fetch
+     * fails — callers must treat null as "unknown", never as a flat book.
+     */
+    List<com.zerodhatech.models.Position> getNetPositions();
 
     /** Place an auto-sliced order for large quantities. Returns empty list on failure. */
     List<BulkOrderResponse> placeAutoSliceOrder(OrderParams params, String variety);

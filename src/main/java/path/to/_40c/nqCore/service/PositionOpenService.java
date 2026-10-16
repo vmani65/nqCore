@@ -144,17 +144,16 @@ public class PositionOpenService {
     	if (quotes.isEmpty()) {
     	    log.error("Quote map is empty — aborting trade open for this book's instruments "
     	            + "(auth missing, Kite error, or unknown/expired instruments)");
-    	    trade.setLegs(legOrder.stream().map(pojo -> {
-    	        WeeklyLeg b = new WeeklyLeg();
-    	        b.setBook(pojo.getBook());
-    	        b.setInstrument(pojo.getInstrument()); b.setExchangeSymbol(pojo.getExchangeSymbol());
-    	        b.setSide(pojo.getSide()); b.setPosition(pojo.getParentPosition());
-    	        b.setMoneyness(pojo.getMoneyness()); b.setLots(pojo.getLots());
-    	        b.setQuantity(pojo.getLots() * LOT_SIZE); b.setStatus(FAILED);
-    	        return b;
-    	    }).collect(Collectors.toList()));
-    	    trade.setStatus(LegScope.rollUpStatus(trade));
-    	    return positionRepository.save(trade);
+    	    return saveNeverPlaced(trade, legOrder);
+    	}
+    	String book = legOrder.isEmpty() ? null : legOrder.get(0).getBook();
+    	List<WeeklyLeg> unsettled = book != null ? positionUtil.findUnsettledLegs(book) : List.of();
+    	if (unsettled != null && !unsettled.isEmpty()) {
+    	    log.error("OPEN BLOCKED for {} — {} leg(s) of this book still have an order unconfirmed at the broker [{}]. "
+    	            + "A fresh entry on top of an order that may yet fill is the 2026-10-07 double-buy; the reconciler "
+    	            + "must settle them first (nothing placed, this signal's {} legs recorded FAILED)",
+    	            book, unsettled.size(), describeUnsettled(unsettled), book);
+    	    return saveNeverPlaced(trade, legOrder);
     	}
     	List<CompletableFuture<Void>> futs = legOrder.stream()
     	    .map(w -> CompletableFuture.runAsync(() -> {
@@ -170,6 +169,33 @@ public class PositionOpenService {
     	    .toList();
     	CompletableFuture.allOf(futs.toArray(new CompletableFuture[0])).join();
     	return materializeAndSave(trade, legOrder, quotes);
+    }
+
+    /**
+     * Records this book's legs for the signal as FAILED without placing anything — the shape
+     * shared by an unreadable quote map and an open blocked by unsettled broker orders. Fill
+     * prices and order ids stay null, so neverTraded semantics hold downstream.
+     */
+    private Position saveNeverPlaced(Position trade, List<LegOrder> legOrder) {
+        trade.setLegs(legOrder.stream().map(pojo -> {
+            WeeklyLeg b = new WeeklyLeg();
+            b.setBook(pojo.getBook());
+            b.setInstrument(pojo.getInstrument()); b.setExchangeSymbol(pojo.getExchangeSymbol());
+            b.setSide(pojo.getSide()); b.setPosition(pojo.getParentPosition());
+            b.setMoneyness(pojo.getMoneyness()); b.setLots(pojo.getLots());
+            b.setQuantity(pojo.getLots() * LOT_SIZE); b.setStatus(FAILED);
+            return b;
+        }).collect(Collectors.toList()));
+        trade.setStatus(LegScope.rollUpStatus(trade));
+        return positionRepository.save(trade);
+    }
+
+    /** "instrument STATUS order=id" per unsettled leg, for the blocked-open / blocked-roll log lines. */
+    static String describeUnsettled(List<WeeklyLeg> unsettled) {
+        return unsettled.stream()
+                .map(l -> l.getInstrument() + " " + l.getStatus() + " order="
+                        + (PENDING_OPEN.equals(l.getStatus()) ? l.getOpenOrderId() : l.getCloseOrderId()))
+                .collect(Collectors.joining(", "));
     }
 
     /**

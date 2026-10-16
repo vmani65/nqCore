@@ -82,7 +82,7 @@ class PendingOpenReconcilerTest {
         assertThat(leg.getStatus()).isEqualTo(LIVE);
         assertThat(position.getStatus()).isEqualTo(LIVE);
         verify(postTrade).afterOpen(position);
-        verify(util, never()).cancelCloseOrders(anyString());
+        verify(util, never()).cancelAndSettleCloseOrders(anyString());
     }
 
     @Test
@@ -95,7 +95,7 @@ class PendingOpenReconcilerTest {
 
         assertThat(leg.getStatus()).isEqualTo(PENDING_OPEN);
         assertThat(position.getStatus()).isEqualTo(PENDING_OPEN);
-        verify(util, never()).cancelCloseOrders(anyString());
+        verify(util, never()).cancelAndSettleCloseOrders(anyString());
         verify(postTrade, never()).afterOpen(any());
     }
 
@@ -133,12 +133,12 @@ class PendingOpenReconcilerTest {
     void resolveBeforeSignalCancelsWorkingEntry() {
         when(util.readCloseOrderState(ORDER))
                 .thenReturn(new CloseOrderState(0, 0.0, "OPEN"));
-        when(util.confirmCloseOrderSettled(ORDER))
+        when(util.cancelAndSettleCloseOrders(ORDER))
                 .thenReturn(new CloseOrderState(0, 0.0, Constants.ORDER_CANCELLED));
 
         reconciler.resolveBeforeSignal();
 
-        verify(util).cancelCloseOrders(ORDER);
+        verify(util).cancelAndSettleCloseOrders(ORDER);
         assertThat(leg.getStatus()).isEqualTo(FAILED);
         assertThat(position.getStatus()).isEqualTo(FAILED);
     }
@@ -148,12 +148,12 @@ class PendingOpenReconcilerTest {
     void resolveBeforeSignalKeepsCancelRaceFill() {
         when(util.readCloseOrderState(ORDER))
                 .thenReturn(new CloseOrderState(0, 0.0, "OPEN"));
-        when(util.confirmCloseOrderSettled(ORDER))
+        when(util.cancelAndSettleCloseOrders(ORDER))
                 .thenReturn(new CloseOrderState(QTY, 212.4, Constants.ORDER_COMPLETE));
 
         reconciler.resolveBeforeSignal();
 
-        verify(util).cancelCloseOrders(ORDER);
+        verify(util).cancelAndSettleCloseOrders(ORDER);
         assertThat(leg.getStatus()).isEqualTo(LIVE);
         assertThat(position.getStatus()).isEqualTo(LIVE);
         verify(postTrade).afterOpen(position);
@@ -177,6 +177,28 @@ class PendingOpenReconcilerTest {
         assertThat(pendingLeg.getStatus()).isEqualTo(FAILED);
         assertThat(weekly.getStatus()).isEqualTo(PARTIAL);
         verify(postTrade).afterOpen(weekly);
+    }
+
+    /**
+     * 2026-10-07 shape at reconcile time: the cancel is rejected / never lands and the entry
+     * order is still OPEN after every attempt. Marking it FAILED here would make a late fill an
+     * untracked broker position, so the leg must stay PENDING_OPEN with its order id intact.
+     */
+    @Test
+    @DisplayName("signal-time resolve: cancel never confirms → leg STAYS PENDING_OPEN, never FAILED while the order may still fill")
+    void resolveBeforeSignalKeepsPendingWhenCancelUnconfirmed() {
+        when(util.readCloseOrderState(ORDER))
+                .thenReturn(new CloseOrderState(0, 0.0, "OPEN"));
+        when(util.cancelAndSettleCloseOrders(ORDER))
+                .thenReturn(new CloseOrderState(0, 0.0, "OPEN"));
+
+        reconciler.resolveBeforeSignal();
+
+        verify(util).cancelAndSettleCloseOrders(ORDER);
+        assertThat(leg.getStatus()).isEqualTo(PENDING_OPEN);
+        assertThat(leg.getOpenOrderId()).as("order id must survive for the next attempt").isEqualTo(ORDER);
+        assertThat(position.getStatus()).isEqualTo(PENDING_OPEN);
+        verify(postTrade, never()).afterOpen(any());
     }
 
     private static WeeklyLeg leg(long id, String instrument, String book, String side, String status, String openOrderId, int qty) {

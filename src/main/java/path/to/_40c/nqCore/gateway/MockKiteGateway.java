@@ -291,6 +291,34 @@ public class MockKiteGateway implements KiteGateway {
         return book;
     }
 
+    /**
+     * Net positions derived from the mock order ledger: every COMPLETE order contributes its
+     * signed quantity (BUY +, SELL −) to its symbol, so the broker-position check sees exactly
+     * the book the mock "broker" holds.
+     */
+    @Override
+    public List<com.zerodhatech.models.Position> getNetPositions() {
+        Map<String, Integer> net = new java.util.TreeMap<>();
+        orders.forEach((id, st) -> {
+            if (!ORDER_COMPLETE.equals(st.status)) return;
+            int signed = path.to._40c.nqCore.util.Constants.BUY.equals(st.txn) ? st.qty : -st.qty;
+            net.merge(st.symbol, signed, Integer::sum);
+        });
+        List<com.zerodhatech.models.Position> out = new ArrayList<>();
+        net.forEach((symbol, qty) -> {
+            com.zerodhatech.models.Position p = new com.zerodhatech.models.Position();
+            p.tradingSymbol = symbol;
+            p.exchange = path.to._40c.nqCore.util.Constants.NFO;
+            p.product = com.zerodhatech.kiteconnect.utils.Constants.PRODUCT_NRML;
+            p.netQuantity = qty;
+            p.buyQuantity = Math.max(qty, 0);
+            p.sellQuantity = Math.max(-qty, 0);
+            out.add(p);
+        });
+        log.info("[MOCK] getNetPositions: {} symbol(s) with a net position", out.size());
+        return out;
+    }
+
     @Override
     public List<BulkOrderResponse> placeAutoSliceOrder(OrderParams params, String variety) {
         String orderId = "MOCK-" + orderCounter.getAndIncrement();

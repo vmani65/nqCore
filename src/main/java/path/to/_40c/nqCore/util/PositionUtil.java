@@ -18,6 +18,8 @@ import static path.to._40c.nqCore.util.Constants.NIFTY;
 import static path.to._40c.nqCore.util.Constants.NIFTY_OPT_TICK;
 import static path.to._40c.nqCore.util.Constants.OVERFILL;
 import static path.to._40c.nqCore.util.Constants.PARTIAL;
+import static path.to._40c.nqCore.util.Constants.PENDING_CLOSE;
+import static path.to._40c.nqCore.util.Constants.PENDING_OPEN;
 import static path.to._40c.nqCore.util.Constants.PLACE_FAILED;
 import static path.to._40c.nqCore.util.Constants.SELL;
 import static path.to._40c.nqCore.util.Constants.SYNTH_WEEKLY;
@@ -734,6 +736,11 @@ public class PositionUtil {
      * LIMIT actually settled 520, so the real position was 520+455=975 against an intended 650.
      * Sizing from the confirmed post-cancel fill (no further fills possible once dead) closes it;
      * a residual combined > qty is logged as OVERFILL for manual review.
+     *
+     * The one failure path that does NOT fall back to MARKET: a LIMIT whose cancel cannot be
+     * confirmed (2026-10-07 — Kite rejected the cancel, the order stayed OPEN, the old top-up
+     * doubled the position). That leg returns non-terminal with the LIMIT id and parks
+     * PENDING_OPEN/PENDING_CLOSE for the reconciler; never two working orders per leg.
      */
     private ExecResult placeGraduatedLimit(Quote q, String ins, String txn, int qty, String contextLabel) {
         ExecTrace trace = EXEC_TRACE.get();
@@ -827,30 +834,30 @@ public class PositionUtil {
 
     /**
      * Finishes an unfilled/partial working LIMIT the aggressive way: cancels it, confirms its TRUE
-     * settled fill via confirmTerminalFill (the cancel-vs-fill discipline from the 2026-06-19
-     * over-fill), then sizes a MARKET top-up from the confirmed remainder and returns the combined
-     * result. Extracted verbatim from the graduated walk's exhausted path so the patient loop's
-     * deadline-action=MARKET shares the identical over-fill guarantees. reason labels log/trace lines.
+     * settled fill via cancelAndConfirm (the cancel-vs-fill discipline from the 2026-06-19
+     * over-fill, with the cancel request itself retried), then sizes a MARKET top-up from the
+     * confirmed remainder and returns the combined result. Extracted verbatim from the graduated
+     * walk's exhausted path so the patient loop's deadline-action=MARKET shares the identical
+     * over-fill guarantees. reason labels log/trace lines.
+     *
+     * Hard rule (2026-10-07 NIFTY26OCT22650PE double-buy): the MARKET top-up is placed ONLY once
+     * the LIMIT is confirmed terminal. That day Kite rejected the cancel with an "internal error"
+     * while the order was still OPEN, the old code topped up anyway and dropped the LIMIT's id,
+     * the LIMIT filled minutes later, and 65 untracked lots sat at the broker for seven sessions.
+     * When every cancel attempt leaves the LIMIT non-terminal, NO second order is placed: the
+     * result keeps the LIMIT's order id with its non-terminal status, closeOrderMayBeLive() holds,
+     * the leg parks PENDING_OPEN / PENDING_CLOSE and the reconciler settles it from the tradebook —
+     * a late fill is then a tracked position and a cancel that lands later a tracked non-fill.
      */
     private ExecResult cancelAndTopUp(String orderId, String ins, String txn, int qty, String contextLabel, String reason) {
         ExecTrace trace = EXEC_TRACE.get();
         if (orderStream != null) orderStream.cancel(orderId);
-        kiteGateway.cancelOrder(orderId, Constants.VARIETY_REGULAR);
 
-        AttemptResult confirmed = confirmTerminalFill(orderId);
+        AttemptResult confirmed = cancelAndConfirm(orderId);
         int filledByLimit  = confirmed.filledQty();
         double limitAvg    = filledByLimit > 0 ? confirmed.avgFillPrice() : 0.0;
-        if (!isTerminal(confirmed.status())) {
-            log.error("LIMIT {} not confirmed terminal after cancel (status={}, filled={}/{}) — sizing "
-                    + "top-up from last-known fill; residual over-fill risk", orderId,
-                    confirmed.status(), filledByLimit, qty);
-            trace.record("cancel NOT confirmed terminal (status=%s) — top-up sized from filled=%d (over-fill risk)",
-                    confirmed.status(), filledByLimit);
-        }
-
         int remaining = Math.max(0, qty - filledByLimit);
-        log.warn("LIMIT {}, cancelled with confirmed fill {}/{} — MARKET for remaining qty={}",
-                reason, filledByLimit, qty, remaining);
+
         if (remaining == 0) {
             if (filledByLimit > qty) {
                 log.error("OVER-FILL: LIMIT {} settled {}/{} (exceeds requested) — no top-up placed; position "
@@ -862,7 +869,20 @@ public class PositionUtil {
             return new ExecResult(orderId, filledByLimit, qty, limitAvg, filledByLimit >= qty,
                     filledByLimit > qty ? OVERFILL : ORDER_COMPLETE);
         }
-        trace.record("%s -> cancelled LIMIT (confirmed filled=%d), MARKET for remaining %d", reason, filledByLimit, remaining);
+        if (!isTerminal(confirmed.status())) {
+            String st = confirmed.status() != null ? confirmed.status() : UNKNOWN;
+            log.error("LIMIT {} still {} (filled {}/{}) after {} cancel attempts — NO MARKET top-up ({}): a second "
+                    + "order while this LIMIT may still fill is the 2026-10-07 double-buy; the leg goes to the "
+                    + "PENDING reconciler carrying the LIMIT order id", orderId, st, filledByLimit, qty,
+                    CANCEL_ATTEMPTS, reason);
+            trace.record("%s -> cancel UNCONFIRMED (status=%s filled=%d/%d) -> NO top-up; LIMIT %s handed to the PENDING reconciler",
+                    reason, st, filledByLimit, qty, orderId);
+            return new ExecResult(orderId, filledByLimit, qty, limitAvg, false, st);
+        }
+        log.warn("LIMIT {}, cancelled with confirmed {} fill {}/{} — MARKET for remaining qty={}",
+                reason, confirmed.status(), filledByLimit, qty, remaining);
+        trace.record("%s -> cancelled LIMIT (confirmed %s filled=%d), MARKET for remaining %d",
+                reason, confirmed.status(), filledByLimit, remaining);
         ExecResult mkt = placeMarketCore(ins, txn, remaining, contextLabel);
 
         int combined  = filledByLimit + mkt.totalFilled();
@@ -1089,6 +1109,40 @@ public class PositionUtil {
     }
 
     /**
+     * Cancel requests issued for one working order before the caller gives up on cancelling it.
+     * Kite rejected a cancel with HTTP 400 "An internal error occurred" on 2026-09-22 and
+     * 2026-10-07 while the order was still OPEN (a walk modify most likely still settling at the
+     * exchange); a fresh request after the ~0.9s confirm budget is expected to land. Worst case
+     * adds ≈ 3 × 0.9s to a leg that is already on its failure path.
+     */
+    private static final int CANCEL_ATTEMPTS = 3;
+
+    /**
+     * Cancels a working order and confirms its TRUE terminal state, re-issuing the cancel request
+     * whenever the order is still non-terminal after a confirm budget — a rejected or lost cancel
+     * must never be mistaken for a dead order. Returns the last read: terminal when the cancel
+     * landed (or the order filled/rejected meanwhile), still non-terminal when every attempt left
+     * it working, in which case the caller must treat the order as LIVE at the broker.
+     */
+    private AttemptResult cancelAndConfirm(String orderId) {
+        ExecTrace trace = EXEC_TRACE.get();
+        AttemptResult confirmed = null;
+        for (int attempt = 1; attempt <= CANCEL_ATTEMPTS; attempt++) {
+            boolean accepted = kiteGateway.cancelOrder(orderId, Constants.VARIETY_REGULAR);
+            String verdict = accepted ? "accepted" : "REJECTED by Kite";
+            confirmed = confirmTerminalFill(orderId);
+            if (isTerminal(confirmed.status())) {
+                trace.record("cancel #%d %s -> %s filled %d", attempt, verdict, confirmed.status(), confirmed.filledQty());
+                return confirmed;
+            }
+            log.warn("LIMIT {} cancel attempt {}/{} {} — order still {} (filled {}) after the confirm budget",
+                    orderId, attempt, CANCEL_ATTEMPTS, verdict, confirmed.status(), confirmed.filledQty());
+            trace.record("cancel #%d %s -> still %s filled %d", attempt, verdict, confirmed.status(), confirmed.filledQty());
+        }
+        return confirmed;
+    }
+
+    /**
      * Pure MARKET path (extracted from old placeAggressiveOrder). Reused as the safety fallback.
      * The result carries the orderId when fills exist OR the order's last-read state is
      * non-terminal — a possibly-still-working order must stay traceable so the PENDING_CLOSE
@@ -1231,16 +1285,30 @@ public class PositionUtil {
         return new CloseOrderState(tradedQty(trades), weightedAvgFillPrice(trades), status);
     }
 
-    /** Requests cancellation of every slice of a close order; failures (already terminal) are logged and ignored. */
-    public void cancelCloseOrders(String orderIds) {
+    /**
+     * Requests cancellation of every slice of a working order. Returns true only when Kite
+     * accepted every request; a rejected or failed request (already terminal, modify still
+     * settling, transient error) is logged and leaves that slice possibly working, so the caller
+     * MUST confirm the order's settled state before acting on it.
+     */
+    public boolean cancelCloseOrders(String orderIds) {
+        boolean allAccepted = true;
         for (String id : orderIds.split(CSV_SPLIT)) {
             if (id.isBlank()) continue;
+            boolean accepted;
             try {
-                kiteGateway.cancelOrder(id.trim(), Constants.VARIETY_REGULAR);
+                accepted = kiteGateway.cancelOrder(id.trim(), Constants.VARIETY_REGULAR);
             } catch (Exception e) {
-                log.warn("cancelCloseOrders: cancel failed for orderId={} (likely already terminal): {}", id, e.getMessage());
+                log.warn("cancelCloseOrders: cancel threw for orderId={}: {}", id, e.getMessage());
+                accepted = false;
+            }
+            if (!accepted) {
+                log.warn("cancelCloseOrders: cancel request for orderId={} NOT accepted by Kite — the order may still be "
+                        + "working; confirm its state before acting on it", id);
+                allAccepted = false;
             }
         }
+        return allAccepted;
     }
 
     /**
@@ -1253,6 +1321,25 @@ public class PositionUtil {
         for (int i = 0; i < CANCEL_CONFIRM_POLLS && !isTerminal(s.lastStatus()); i++) {
             sleepMillis(CANCEL_CONFIRM_GAP_MS);
             s = readCloseOrderState(orderIds);
+        }
+        return s;
+    }
+
+    /**
+     * The reconcilers' signal-time settle: cancel every slice and confirm the aggregate settled
+     * state, re-issuing the cancel up to CANCEL_ATTEMPTS times while any slice is still working.
+     * Returns the last read; a non-terminal result means the order could NOT be settled and the
+     * leg must stay PENDING — settling it as failed/orphan would let a late fill become an
+     * untracked broker position (open side) or a double-sell past flat (close side).
+     */
+    public CloseOrderState cancelAndSettleCloseOrders(String orderIds) {
+        CloseOrderState s = null;
+        for (int attempt = 1; attempt <= CANCEL_ATTEMPTS; attempt++) {
+            boolean accepted = cancelCloseOrders(orderIds);
+            s = confirmCloseOrderSettled(orderIds);
+            if (isTerminal(s.lastStatus())) return s;
+            log.warn("cancelAndSettleCloseOrders: orderIds={} attempt {}/{} ({}) — still {} ({} traded) after the confirm budget",
+                    orderIds, attempt, CANCEL_ATTEMPTS, accepted ? "cancel accepted" : "cancel REJECTED", s.lastStatus(), s.tradedQty());
         }
         return s;
     }
@@ -1597,6 +1684,26 @@ public class PositionUtil {
         List<Position> trades = positionRepository.findByLegStatusAndLegBook(LIVE, book);
         session.disableFilter(LIVE_ORDER_BOOKS);
         return trades.stream().filter(t -> PARTIAL.equals(t.getStatus())).findFirst().orElse(null);
+    }
+
+    /**
+     * Every leg of the given book whose order is still unconfirmed at the broker — PENDING_OPEN
+     * (an entry that may yet fill) or PENDING_CLOSE (an exit that may yet fill). While any exists
+     * the book's true broker position is unknown and no new entry may be placed for it: the
+     * 2026-10-07 22650PE orphan was a second order stacked on a LIMIT whose cancel had not
+     * landed. Scans by LEG status across all rows — a shared row's status may show the other
+     * book's state — and matches the leg's own book stamp, so one book never blocks the other.
+     */
+    public List<WeeklyLeg> findUnsettledLegs(String book) {
+        List<WeeklyLeg> unsettled = new ArrayList<>();
+        for (String status : List.of(PENDING_OPEN, PENDING_CLOSE)) {
+            for (Position p : positionRepository.findByLegStatus(status)) {
+                for (WeeklyLeg l : p.getLegs()) {
+                    if (status.equals(l.getStatus()) && book.equals(LegScope.bookOf(l))) unsettled.add(l);
+                }
+            }
+        }
+        return unsettled;
     }
 
     private List<com.zerodhatech.models.Trade> fetchWithRetry(String orderId, String context) {

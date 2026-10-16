@@ -31,6 +31,7 @@ import com.zerodhatech.kiteconnect.utils.Constants;
 import com.zerodhatech.models.Quote;
 
 import path.to._40c.nqCore.entity.Position;
+import path.to._40c.nqCore.entity.WeeklyLeg;
 import path.to._40c.nqCore.pojo.LegOrder;
 import path.to._40c.nqCore.repo.PositionRepository;
 import path.to._40c.nqCore.util.ComputeUtil;
@@ -160,6 +161,34 @@ class PositionOpenServiceBookTest {
         Position saved = service.openWeeklyTrade("24500", "CE", new Position());
 
         assertThat(saved.getStatus()).isEqualTo(PARTIAL);
+    }
+
+    /**
+     * The open guard for the 2026-10-07 class: while any leg of this book still has an order
+     * unconfirmed at the broker (PENDING_OPEN / PENDING_CLOSE), a fresh entry would stack on an
+     * order that may yet fill. Nothing may be placed; the signal's legs are recorded FAILED with
+     * no order id (neverTraded semantics), exactly like the unreadable-quote abort.
+     */
+    @Test
+    @DisplayName("open BLOCKED while the book has a leg with an order unsettled at the broker — nothing placed, legs FAILED")
+    void openBlockedWhileBookHasUnsettledLeg() {
+        LegOrder leg = legOrder(MONTHLY_INS, LONG_MONTHLY, BUY, 1);
+        when(compute.buildMonthlyInstrument(anyString(), any(Position.class))).thenReturn(List.of(leg));
+        when(util.getQuote(any(String[].class))).thenReturn(Map.of("NFO:" + MONTHLY_INS, new Quote()));
+        WeeklyLeg stuck = new WeeklyLeg();
+        stuck.setInstrument("NIFTY26OCT22650PE");
+        stuck.setBook(LONG_MONTHLY);
+        stuck.setStatus(PENDING_OPEN);
+        stuck.setOpenOrderId("LIMIT-STUCK");
+        when(util.findUnsettledLegs(LONG_MONTHLY)).thenReturn(List.of(stuck));
+
+        Position saved = service.openMonthlyTrade("24500", "CE", new Position());
+
+        verify(util, never()).placeAggressiveOrder(any(), anyString(), anyString(), anyInt(), anyString());
+        assertThat(saved.getStatus()).isEqualTo(FAILED);
+        assertThat(saved.getLegs()).hasSize(1);
+        assertThat(saved.getLegs().get(0).getStatus()).isEqualTo(FAILED);
+        assertThat(saved.getLegs().get(0).getOpenOrderId()).isNull();
     }
 
     private void stubWeeklyPair() {

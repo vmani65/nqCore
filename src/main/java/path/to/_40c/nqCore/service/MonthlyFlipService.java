@@ -102,6 +102,13 @@ public class MonthlyFlipService {
     public FlipOutcome flip(String signalPrice, String type, Signal signal, Position newTrade) {
         pendingCloseReconciler.resolveBeforeSignal();
         pendingOpenReconciler.resolveBeforeSignal();
+        List<WeeklyLeg> unsettled = positionUtil.findUnsettledLegs(LONG_MONTHLY);
+        if (unsettled != null && !unsettled.isEmpty()) {
+            log.error("interleaved flip declined — {} LONG_MONTHLY leg(s) still unsettled at the broker after reconcile [{}]; "
+                    + "legacy path closes the held legs and the open guard blocks the re-entry until they settle",
+                    unsettled.size(), PositionOpenService.describeUnsettled(unsettled));
+            return null;
+        }
         Position held = positionUtil.findLiveTradesWithLiveOrderBooks(LONG_MONTHLY);
         List<WeeklyLeg> heldMonthlyLegs = held != null ? LegScope.of(held, LONG_MONTHLY) : List.of();
         if (held == null || heldMonthlyLegs.isEmpty()) {

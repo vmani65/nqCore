@@ -124,6 +124,13 @@ public class PositionRolloverService {
                     book, targetPrefix);
             return;
         }
+        List<WeeklyLeg> unsettled = positionUtil.findUnsettledLegs(book);
+        if (unsettled != null && !unsettled.isEmpty()) {
+            log.error("Rollover {} BLOCKED — {} leg(s) of this book still have an order unconfirmed at the broker [{}]; "
+                    + "rolling now could stack the re-open on an order that may yet fill. The daily trigger retries "
+                    + "once the reconciler settles them", book, unsettled.size(), PositionOpenService.describeUnsettled(unsettled));
+            return;
+        }
         log.info("Rolling over {} legs of position id={}: {}", book, tradeToRollOver.getId(),
                 bookLegs.stream().map(WeeklyLeg::getInstrument).toList());
         List<LegOrder> legOrder = legBuilder.apply(tradeToRollOver);

@@ -14,6 +14,8 @@ import static org.mockito.Mockito.when;
 
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -160,31 +162,67 @@ class PositionUtilOverfillTest {
     }
 
     /**
-     * If the cancel never confirms terminal within the polling budget, the leg must still avoid an
-     * over-fill: the top-up is sized from the last-known fill and the combined position is not
-     * allowed to exceed the intended qty in the bug's mechanism. Here the order stays OPEN at 400
-     * the whole time; the top-up covers 650−400=250 and the result reports 650 (no double-count).
+     * The 2026-10-07 NIFTY26OCT22650PE double-buy, replayed: Kite rejects the cancel (HTTP 400
+     * "An internal error occurred") and the LIMIT stays OPEN through every cancel attempt. The
+     * old code placed a full-size MARKET anyway and dropped the LIMIT's id; the LIMIT filled
+     * later and the extra lots sat untracked at the broker for seven sessions. Now: NO MARKET
+     * order, the cancel is retried, and the result keeps the LIMIT id with its non-terminal
+     * status so the open/close services park the leg PENDING_* for the reconciler.
      */
     @Test
-    @DisplayName("cancel never confirms terminal — top-up still sized from last-known fill, no double-count")
-    void topUpSizedConservativelyWhenCancelNeverConfirms() {
-        when(gw.getOrderHistory("LIMIT1")).thenReturn(List.of(order(OPEN, 400, 97.98)));
+    @DisplayName("2026-10-07 replay: cancel rejected, LIMIT still OPEN → NO MARKET top-up, LIMIT id kept as possibly-live")
+    void noTopUpWhenCancelNeverConfirms() {
+        when(gw.cancelOrder(anyString(), anyString())).thenReturn(false);
+        when(gw.getOrderHistory("LIMIT1")).thenReturn(List.of(order(OPEN, 0, 0.0)));
+
+        ExecResult res = util.placeAggressiveOrder(
+                quote(285.0, 286.05), "NIFTY26OCT22650PE", Constants.TRANSACTION_TYPE_BUY, QTY, "ENTRY");
+
+        verify(gw, times(1)).placeOrder(any(OrderParams.class), anyString()); // the LIMIT, nothing else
+        verify(gw, never()).placeOrder(
+                argThat(p -> p != null && Constants.ORDER_TYPE_MARKET.equals(p.orderType)), anyString());
+        verify(gw, times(3)).cancelOrder("LIMIT1", Constants.VARIETY_REGULAR);
+        assertThat(res.aggregateOrderIds()).as("the working LIMIT must stay traceable").isEqualTo("LIMIT1");
+        assertThat(res.totalFilled()).isZero();
+        assertThat(res.fullyFilled()).isFalse();
+        assertThat(res.terminalStatus()).isEqualTo(OPEN);
+        assertThat(PositionUtil.closeOrderMayBeLive(res)).as("drives PENDING_OPEN / PENDING_CLOSE").isTrue();
+    }
+
+    /**
+     * The benign variant of the same rejection: the first cancel is rejected and the order is
+     * still OPEN after the confirm budget, the retried cancel lands and confirms CANCELLED with a
+     * partial fill. Only then is the MARKET top-up placed, sized from the confirmed fill.
+     */
+    @Test
+    @DisplayName("cancel rejected once, lands on retry → top-up sized from the confirmed post-cancel fill")
+    void cancelRetriedUntilConfirmedThenTopUp() {
+        AtomicInteger cancels = new AtomicInteger();
+        AtomicBoolean landed = new AtomicBoolean(false);
+        when(gw.cancelOrder(anyString(), anyString())).thenAnswer(inv -> {
+            if (cancels.incrementAndGet() == 1) return false;   // Kite 400 "An internal error occurred"
+            landed.set(true);
+            return true;
+        });
+        when(gw.getOrderHistory("LIMIT1")).thenAnswer(inv -> landed.get()
+                ? List.of(order(Constants.ORDER_CANCELLED, 130, 97.98))
+                : List.of(order(OPEN, 130, 97.98)));
         when(gw.getOrderHistory("MARKET1")).thenReturn(
-                List.of(order(Constants.ORDER_COMPLETE, 250, 98.20)));
+                List.of(order(Constants.ORDER_COMPLETE, 520, 98.20)));
 
         ExecResult res = util.placeAggressiveOrder(
                 quote(97.80, 98.05), "NIFTY2662324050CE", Constants.TRANSACTION_TYPE_BUY, QTY, "ENTRY");
 
+        verify(gw, times(2)).cancelOrder("LIMIT1", Constants.VARIETY_REGULAR);
         ArgumentCaptor<OrderParams> cap = ArgumentCaptor.forClass(OrderParams.class);
         verify(gw, times(2)).placeOrder(cap.capture(), anyString());
         OrderParams marketParams = cap.getAllValues().stream()
                 .filter(p -> Constants.ORDER_TYPE_MARKET.equals(p.orderType))
-                .findFirst().orElseThrow();
-
-        assertThat(marketParams.quantity)
-                .as("top-up sized from last-known 400 → 650−400=250")
-                .isEqualTo(250);
+                .findFirst().orElseThrow(() -> new AssertionError("no MARKET top-up was placed"));
+        assertThat(marketParams.quantity).as("650 − confirmed 130").isEqualTo(520);
         assertThat(res.totalFilled()).isEqualTo(QTY);
+        assertThat(res.fullyFilled()).isTrue();
+        assertThat(res.aggregateOrderIds()).isEqualTo("LIMIT1, MARKET1");
     }
 
     /**

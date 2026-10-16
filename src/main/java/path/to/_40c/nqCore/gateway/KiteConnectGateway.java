@@ -105,6 +105,22 @@ public class KiteConnectGateway implements KiteGateway {
     }
 
     @Override
+    public List<com.zerodhatech.models.Position> getNetPositions() {
+        var kite = getKiteConnectObject();
+        if (kite == null) { log.error("KiteConnect null — cannot fetch positions"); return null; }
+        try {
+            Map<String, List<com.zerodhatech.models.Position>> all = kite.getPositions();
+            List<com.zerodhatech.models.Position> net = all != null ? all.get("net") : null;
+            return net != null ? net : Collections.emptyList();
+        } catch (KiteException e) {
+            log.error("Exception while fetching positions — code={} message={}", e.code, e.getMessage());
+        } catch (JSONException | IOException e) {
+            log.error("Exception while fetching positions", e);
+        }
+        return null;
+    }
+
+    @Override
     public OrderResponse placeOrder(OrderParams params, String variety) {
         var kite = getKiteConnectObject();
         if (kite == null) { log.error("KiteConnect null — cannot place order"); return null; }
@@ -157,12 +173,16 @@ public class KiteConnectGateway implements KiteGateway {
             kite.cancelOrder(orderId, variety);
             return true;
         } catch (KiteException e) {
-            // Kite returns an error if the order is already in a terminal state. Log + treat as success
-            // so the caller doesn't loop forever; the subsequent status read will confirm actual state.
-            log.warn("cancelOrder for {} — code={} message={} (likely already terminal)", orderId, e.code, e.getMessage());
-            return true;
+            // Kite rejects a cancel both for a benign reason (order already terminal) and for a
+            // dangerous one — 2026-09-22 and 2026-10-07: HTTP 400 "An internal error occurred" while
+            // the order was still OPEN (a modify most likely still settling at the exchange). The
+            // message does not distinguish them, so this never claims success: the caller must read
+            // the order's state and act only on a confirmed terminal.
+            log.warn("cancelOrder for {} NOT accepted — code={} message={} (order may be terminal OR still working; "
+                    + "confirm its state before placing anything else for this leg)", orderId, e.code, e.getMessage());
+            return false;
         } catch (JSONException | IOException e) {
-            log.error("cancelOrder exception for {}", orderId, e);
+            log.error("cancelOrder exception for {} — order state unknown, confirm before acting", orderId, e);
         }
         return false;
     }

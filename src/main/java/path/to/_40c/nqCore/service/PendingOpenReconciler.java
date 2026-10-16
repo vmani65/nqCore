@@ -34,7 +34,9 @@ import path.to._40c.nqCore.util.PositionUtil.CloseOrderState;
  *   (it is a resting entry near the signal price); only a terminal outcome is acted on.
  * - resolveBeforeSignal() reconciles aggressively before any signal-driven close/open:
  *   a still-working entry order is cancelled and settled NOW, so the next signal never
- *   stacks orders on top of an unconfirmed entry working the same strike.
+ *   stacks orders on top of an unconfirmed entry working the same strike. When the cancel
+ *   cannot be confirmed (2026-10-07: Kite rejected it and the order stayed OPEN) the leg
+ *   STAYS pending — the open guard then blocks this book's entries until it settles.
  *
  * Outcomes per pending leg: filled in full → leg LIVE at intended qty; terminal with a
  * partial fill → leg LIVE trimmed to the filled qty (real position at reduced size);
@@ -124,12 +126,16 @@ public class PendingOpenReconciler {
         }
         log.warn("PENDING_OPEN trade id={} leg {} — entry order {} still {} at signal time; cancelling before the next trade",
                 p.getId(), w.getInstrument(), orderIds, s.lastStatus());
-        positionUtil.cancelCloseOrders(orderIds);
-        CloseOrderState settled = positionUtil.confirmCloseOrderSettled(orderIds);
+        CloseOrderState settled = positionUtil.cancelAndSettleCloseOrders(orderIds);
         if (settled.tradedQty() >= qty) {
             markLegLive(p, w, settled, qty);
-        } else {
+        } else if (PositionUtil.isTerminalStatus(settled.lastStatus())) {
             settleTerminal(p, w, settled, qty);
+        } else {
+            log.error("PENDING_OPEN trade id={} leg {} — entry order {} still {} ({}/{} filled) after every cancel attempt; "
+                    + "leg STAYS PENDING_OPEN (settling it as failed would let a late fill become an untracked broker "
+                    + "position — the 2026-10-07 shape); entries for this book stay blocked until it settles",
+                    p.getId(), w.getInstrument(), orderIds, settled.lastStatus(), settled.tradedQty(), qty);
         }
     }
 

@@ -134,14 +134,20 @@ public class PendingCloseReconciler {
         }
         log.warn("PENDING_CLOSE trade id={} leg {} — close order {} still {} at signal time; cancelling before re-entry",
                 p.getId(), w.getInstrument(), orderIds, s.lastStatus());
-        positionUtil.cancelCloseOrders(orderIds);
-        CloseOrderState settled = positionUtil.confirmCloseOrderSettled(orderIds);
+        CloseOrderState settled = positionUtil.cancelAndSettleCloseOrders(orderIds);
         if (settled.tradedQty() >= qty) {
             markLegClosed(p, w, settled);
             return false;
         }
-        markOrphan(p, w, settled, qty);
-        return true;
+        if (PositionUtil.isTerminalStatus(settled.lastStatus())) {
+            markOrphan(p, w, settled, qty);
+            return true;
+        }
+        log.error("PENDING_CLOSE trade id={} leg {} — close order {} still {} ({}/{} filled) after every cancel attempt; "
+                + "leg STAYS PENDING_CLOSE (reviving it as LIVE would flatten against an exit that may still fill — "
+                + "a double-sell past flat); entries for this book stay blocked until it settles",
+                p.getId(), w.getInstrument(), orderIds, settled.lastStatus(), settled.tradedQty(), qty);
+        return false;
     }
 
     /**
