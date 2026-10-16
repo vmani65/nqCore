@@ -94,6 +94,9 @@ class PostTradeServiceSharedRowTest {
         assertThat(capital.getCurrentCapital()).isEqualTo(2_800_000.0);
     }
 
+    /**
+     * weekly gross 650×65 − 650×34 = 20150; monthly gross 130×55 = 7150; charges 3×44 = 132
+     */
     @Test
     @DisplayName("last leg closed: ONE pass computes cumulative two-book P&L and advances the capital chain once")
     void terminalRowAccountsOnce() {
@@ -101,7 +104,6 @@ class PostTradeServiceSharedRowTest {
 
         service.afterClose(row);
 
-        // weekly gross 650×65 − 650×34 = 20150; monthly gross 130×55 = 7150; charges 3×44 = 132
         assertThat(row.getStatus()).isEqualTo(CLOSED);
         assertThat(row.getPointsPnl()).isEqualTo(100.0);
         assertThat(row.getActualPnl()).isEqualTo(20150.0 + 7150.0 - 132.0);

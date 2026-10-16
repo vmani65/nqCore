@@ -98,6 +98,11 @@ class PositionRolloverServiceMonthlyTest {
                 "NFO:" + OLD_INS, new Quote(), "NFO:" + NEW_INS, new Quote()));
     }
 
+    /**
+     * segment = 24800 - 24500 = +300 pts, banked once into the MONTHLY chain, its baseline reset
+     * <p>closed leg stamped on the futures-equivalent scale: 130 × 0.5 × 300
+     * <p>new leg LIVE on the latest contract, same position row
+     */
     @Test
     @DisplayName("monthly roll: sells in-hand leg, banks qty/2-scaled segment, buys latest contract at ATM, stays LIVE")
     void monthlyRollBanksAndReopensOnLatestContract() {
@@ -111,16 +116,13 @@ class PositionRolloverServiceMonthlyTest {
 
         service.rollOverMonthly("24800");
 
-        // segment = 24800 - 24500 = +300 pts, banked once into the MONTHLY chain, its baseline reset
         assertThat(monthly.getMonthlyBankedPoints()).isEqualTo(300.0);
         assertThat(monthly.getMonthlyBaselineSpot()).isEqualTo(24800.0);
         assertThat(monthly.getBaselineSpot()).as("weekly chain untouched by a monthly roll").isNull();
         assertThat(monthly.getEntrySpot()).as("entrySpot immutable").isEqualTo(24500.0);
-        // closed leg stamped on the futures-equivalent scale: 130 × 0.5 × 300
         assertThat(heldLeg.getStatus()).isEqualTo(CLOSED);
         assertThat(heldLeg.getExpectedPnl()).isEqualTo(19500.0);
         assertThat(heldLeg.getCloseOrderId()).isEqualTo("M-ROLL-CLOSE");
-        // new leg LIVE on the latest contract, same position row
         assertThat(monthly.getStatus()).isEqualTo(LIVE);
         List<WeeklyLeg> newLegs = monthly.getLegs().stream().filter(l -> NEW_INS.equals(l.getInstrument())).toList();
         assertThat(newLegs).hasSize(1);

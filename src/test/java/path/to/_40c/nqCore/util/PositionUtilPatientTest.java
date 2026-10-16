@@ -103,6 +103,9 @@ class PositionUtilPatientTest {
         verify(gw, never()).cancelOrder(anyString(), anyString());
     }
 
+    /**
+     * Deadline REST: order left resting, PENDING_CLOSE contract satisfied.
+     */
     @Test
     @DisplayName("wide spread: anchor is LTP clamped into the book — and NO MARKET fallback, ever")
     void wideSpreadAnchorsToClampedLtpAndNeverGoesMarket() {
@@ -115,7 +118,6 @@ class PositionUtilPatientTest {
         assertThat(cap.getValue().orderType).isEqualTo(Constants.ORDER_TYPE_LIMIT);
         assertThat(cap.getValue().price).as("LTP 464.53 tick-rounded, not the noise mid 465").isCloseTo(464.55, offset(0.001));
 
-        // Deadline REST: order left resting, PENDING_CLOSE contract satisfied.
         assertThat(res.aggregateOrderIds()).isEqualTo("LIMIT1");
         assertThat(res.fullyFilled()).isFalse();
         assertThat(res.terminalStatus()).isEqualTo(OPEN);
@@ -139,6 +141,10 @@ class PositionUtilPatientTest {
 
     // ─── concession discipline ──────────────────────────────────────────────────────────────
 
+    /**
+     * anchor0=463, cap=max(2.0, 463×0.5%)=2.315; fracs {0, .5, 1} → step0 holds at anchor, step1 →
+     * 461.85, step2 → 460.70 (floor 460.685 tick-rounded).
+     */
     @Test
     @DisplayName("concession walks down by capped fractions and modify always carries the original qty")
     void concessionWalksDownCappedAndKeepsOriginalQty() {
@@ -146,8 +152,6 @@ class PositionUtilPatientTest {
 
         ExecResult res = patientSell(quote(462.0, 464.0, 463.0));
 
-        // anchor0=463, cap=max(2.0, 463×0.5%)=2.315; fracs {0, .5, 1} → step0 holds at anchor,
-        // step1 → 461.85, step2 → 460.70 (floor 460.685 tick-rounded).
         ArgumentCaptor<Double> px = ArgumentCaptor.forClass(Double.class);
         ArgumentCaptor<Integer> q = ArgumentCaptor.forClass(Integer.class);
         verify(gw, times(2)).modifyOrder(anyString(), px.capture(), q.capture(), anyString());
@@ -163,6 +167,10 @@ class PositionUtilPatientTest {
         assertThat(PositionUtil.closeOrderMayBeLive(res)).isTrue();
     }
 
+    /**
+     * anchor0=463 (healthy first refresh), then fair collapses to 450.5: every reprice pins to the
+     * floor 460.685→460.70 instead of following the collapsed book down.
+     */
     @Test
     @DisplayName("collapsing fair anchor is clamped to the anchor0−cap band — garbage quotes can't walk the price away")
     void collapsingFairIsClampedToAnchorBand() {
@@ -173,8 +181,6 @@ class PositionUtilPatientTest {
 
         patientSell(quote(462.0, 464.0, 463.0));
 
-        // anchor0=463 (healthy first refresh), then fair collapses to 450.5: every reprice pins to
-        // the floor 460.685→460.70 instead of following the collapsed book down.
         ArgumentCaptor<Double> px = ArgumentCaptor.forClass(Double.class);
         verify(gw, times(1)).modifyOrder(anyString(), px.capture(), anyInt(), anyString());
         assertThat(px.getValue()).isCloseTo(460.70, offset(0.001));

@@ -165,6 +165,13 @@ public class KiteConnectGateway implements KiteGateway {
         return false;
     }
 
+    /**
+     * Kite rejects a cancel both for a benign reason (order already terminal) and for a dangerous
+     * one — 2026-09-22 and 2026-10-07: HTTP 400 "An internal error occurred" while the order was
+     * still OPEN (a modify most likely still settling at the exchange). The message does not
+     * distinguish them, so this never claims success: the caller must read the order's state and
+     * act only on a confirmed terminal.
+     */
     @Override
     public boolean cancelOrder(String orderId, String variety) {
         var kite = getKiteConnectObject();
@@ -173,11 +180,6 @@ public class KiteConnectGateway implements KiteGateway {
             kite.cancelOrder(orderId, variety);
             return true;
         } catch (KiteException e) {
-            // Kite rejects a cancel both for a benign reason (order already terminal) and for a
-            // dangerous one — 2026-09-22 and 2026-10-07: HTTP 400 "An internal error occurred" while
-            // the order was still OPEN (a modify most likely still settling at the exchange). The
-            // message does not distinguish them, so this never claims success: the caller must read
-            // the order's state and act only on a confirmed terminal.
             log.warn("cancelOrder for {} NOT accepted — code={} message={} (order may be terminal OR still working; "
                     + "confirm its state before placing anything else for this leg)", orderId, e.code, e.getMessage());
             return false;

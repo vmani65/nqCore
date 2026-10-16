@@ -59,6 +59,10 @@ class PositionCloseServicePendingCloseTest {
     private WeeklyLeg ceLeg;
     private WeeklyLeg peLeg;
 
+    /**
+     * PE exit fills fully; the CE exit is the incident leg, scripted per test. Weekly signal closes
+     * must stay AGGRESSIVE under the patient-mode routing, so the mode is asserted here.
+     */
     @BeforeEach
     void setUp() {
         PositionRepository repo = mock(PositionRepository.class);
@@ -78,8 +82,6 @@ class PositionCloseServicePendingCloseTest {
         when(util.findLiveTradesWithLiveOrderBooks(SYNTH_WEEKLY)).thenReturn(position);
         when(util.getQuote(any(String[].class))).thenReturn(Map.of("NFO:" + CE, new Quote(), "NFO:" + PE, new Quote()));
 
-        // PE exit fills fully; the CE exit is the incident leg, scripted per test. Weekly signal
-        // closes must stay AGGRESSIVE under the patient-mode routing, so the mode is asserted here.
         when(util.placeAggressiveOrder(any(), eq(PE), eq(SELL), anyInt(), anyString(), eq(ExecMode.AGGRESSIVE)))
                 .thenReturn(new ExecResult("PE-CLOSE-1", QTY, QTY, 153.5, true, Constants.ORDER_COMPLETE));
     }

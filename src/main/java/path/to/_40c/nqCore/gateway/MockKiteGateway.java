@@ -193,6 +193,11 @@ public class MockKiteGateway implements KiteGateway {
         return List.of(o);
     }
 
+    /**
+     * Places a mock order and records it in the ledger. In INSTANT fill mode the order completes
+     * at once and a synthetic terminal-fill event is injected (D₂) so the WS-await path completes
+     * within ~50ms, mirroring real Kite WS behavior; the other fill modes leave it OPEN.
+     */
     @Override
     public OrderResponse placeOrder(OrderParams params, String variety) {
         String orderId = "MOCK-" + orderCounter.getAndIncrement();
@@ -208,8 +213,6 @@ public class MockKiteGateway implements KiteGateway {
                 params.price, execPrice, fillMode, orderId);
         OrderResponse response = new OrderResponse();
         response.orderId = orderId;
-        // D₂: inject a synthetic terminal-fill event so the WS-await path completes
-        // within ~50ms, mirroring real Kite WS behavior.
         if (instant) {
             orderStream.scheduleSyntheticFill(orderId, params.tradingsymbol,
                     params.transactionType, params.quantity, execPrice);

@@ -94,6 +94,10 @@ class BrokerPositionReconcilerTest {
         assertThat(reconciler.reconcile()).isEmpty();
     }
 
+    /**
+     * At <code>verify(repo, times(3)).findByLegStatus(anyString())</code>: LIVE + two PENDING
+     * scans, first pass only
+     */
     @Test
     @DisplayName("unreadable broker book is never read as flat — previous report kept, no DB scan")
     void unreadableBrokerKeepsLastReport() {
@@ -105,7 +109,7 @@ class BrokerPositionReconcilerTest {
         List<Mismatch> after = reconciler.reconcile();
 
         assertThat(after).isEqualTo(before).isNotEmpty();
-        verify(repo, times(3)).findByLegStatus(anyString()); // LIVE + two PENDING scans, first pass only
+        verify(repo, times(3)).findByLegStatus(anyString());
     }
 
     @Test

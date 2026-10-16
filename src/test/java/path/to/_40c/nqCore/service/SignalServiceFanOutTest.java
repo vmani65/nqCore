@@ -53,6 +53,10 @@ class SignalServiceFanOutTest {
     private final Position weeklyLive = livePosition(1L);
     private final Position monthlyLive = livePosition(2L);
 
+    /**
+     * interleaveAvailable() defaults to false on the mock, so fan-out tests exercise the legacy
+     * paths.
+     */
     @BeforeEach
     void setUp() {
         openingService = mock(PositionOpenService.class);
@@ -63,7 +67,6 @@ class SignalServiceFanOutTest {
         weeklySymbolService = mock(WeeklySymbolService.class);
         monthlySymbolService = mock(MonthlySymbolService.class);
         positionRepository = mock(PositionRepository.class);
-        // interleaveAvailable() defaults to false on the mock, so fan-out tests exercise the legacy paths.
         service = new SignalService(openingService, closingService, rollOverService, postTradeService,
                 positionRepository, weeklySymbolService, bookConfig, monthlySymbolService,
                 mock(MonthlyFlipService.class));

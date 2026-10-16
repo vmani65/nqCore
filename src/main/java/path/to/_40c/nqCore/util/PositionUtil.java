@@ -741,6 +741,13 @@ public class PositionUtil {
      * confirmed (2026-10-07 — Kite rejected the cancel, the order stayed OPEN, the old top-up
      * doubled the position). That leg returns non-terminal with the LIMIT id and parks
      * PENDING_OPEN/PENDING_CLOSE for the reconciler; never two working orders per leg.
+     * <p>Step waits (D₂): with a healthy order stream each step waits on the order's terminal-event
+     * future and falls through to the REST confirm as soon as the event arrives (or was already
+     * cached); a step deadline without an event just proceeds to the REST peek. The REST
+     * peekOrderState after the wait stays the source of truth — the WS event only short-circuits
+     * the wait. On a WS error mid-flight the attempt degrades to sleep-poll for its remaining
+     * steps (awaitFut=null sentinel), and the awaiter is re-armed after every modify because a
+     * modify resets the order's terminal state.
      */
     private ExecResult placeGraduatedLimit(Quote q, String ins, String txn, int qty, String contextLabel) {
         ExecTrace trace = EXEC_TRACE.get();
@@ -775,10 +782,6 @@ public class PositionUtil {
         log.info("LIMIT @ {} placed orderId={}", params.price, resp.orderId);
         trace.record("LIMIT @ %s placed orderId=%s", params.price, resp.orderId);
 
-        // D₂: WS-await if stream healthy, else legacy sleep-then-poll.
-        // The REST peekOrderState after the wait is still the source of truth — the WS
-        // event just lets us short-circuit the wait. On WS error mid-flight, we degrade
-        // to sleep-poll for the remaining steps of THIS attempt (awaitFut=null sentinel).
         final boolean wsHealthy = orderStream != null && orderStream.isHealthy();
         java.util.concurrent.CompletableFuture<com.zerodhatech.models.Order> awaitFut =
                 wsHealthy ? orderStream.awaitTerminal(resp.orderId) : null;
@@ -791,9 +794,7 @@ public class PositionUtil {
             if (awaitFut != null && waitMs > 0) {
                 try {
                     awaitFut.get(waitMs, java.util.concurrent.TimeUnit.MILLISECONDS);
-                    // event arrived (or already cached) — fall through to REST confirm
                 } catch (java.util.concurrent.TimeoutException te) {
-                    // step deadline reached without event
                 } catch (Exception e) {
                     log.warn("WS await error: {} — falling back to sleep-poll for remaining steps", e.getMessage());
                     trace.record("WS await error: %s -> sleep-poll for remaining steps", e.getMessage());
@@ -819,7 +820,6 @@ public class PositionUtil {
             log.debug("walk step={} newPx={} filledSoFar={}/{} modified={}", step, newPx, ar.filledQty(), qty, mod);
             trace.record("step%d -> %s filled %d/%d%s", step, newPx, ar.filledQty(), qty, mod ? "" : " (modify FAILED)");
 
-            // Re-arm awaiter for next step — modify resets the order's terminal state.
             if (awaitFut != null) awaitFut = orderStream.awaitTerminal(resp.orderId);
         }
 
@@ -1344,14 +1344,17 @@ public class PositionUtil {
         return s;
     }
 
-    /** Σ tradedQuantity across an order's tradebook — authoritative executed qty. */
+    /**
+     * Σ tradedQuantity across an order's tradebook — authoritative executed qty.
+     * <p>A malformed quantity string is skipped rather than failing the sum.
+     */
     private static int tradedQty(List<com.zerodhatech.models.Trade> trades) {
         if (trades == null) return 0;
         int sum = 0;
         for (com.zerodhatech.models.Trade t : trades) {
             if (t == null || t.quantity == null) continue;
             try { sum += (int) Math.round(Double.parseDouble(t.quantity.trim())); }
-            catch (NumberFormatException e) { /* skip malformed */ }
+            catch (NumberFormatException e) { }
         }
         return sum;
     }

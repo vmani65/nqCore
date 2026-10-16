@@ -71,7 +71,7 @@ Owner's stated tolerance: waiting 5–10 minutes for a fair exit price is fine.
 2. **The walk gives up after 2.5 s.** `WALK_DELAYS_MS = {500,1500,2500}` (:564),
    `WALK_AGGRESSION = {0.25,0.50,1.00}` (:567) — final step crosses whatever the spread is,
    then a MARKET top-up for any remainder (:699-728).
-3. **Large qty → broker-side MARKET auto-slice.** qty ≥ 1755 routes to `autoSliceFallback`
+3. **Large qty → broker-side MARKET auto-slice.** qty ≥ 3510 (NSE freeze limit since 2026-10-05, was 1755) routes to `autoSliceFallback`
    (:538-541, :1011-1036), MARKET per slice. Not binding at today's 2-lot monthly size, but
    becomes binding at scale.
 
@@ -92,7 +92,7 @@ Owner's stated tolerance: waiting 5–10 minutes for a fair exit price is fine.
 
 `PositionUtil.placeAggressiveOrder(Quote q, String ins, String txn, int qty, String
 contextLabel)` (util/PositionUtil.java:532) is the **single** order-placement entry for the
-whole app. Routing (:537-547): qty ≥ `MAX_SIZE_PER_ORDER` (1755) → `autoSliceFallback`;
+whole app. Routing (:537-547): qty ≥ `MAX_SIZE_PER_ORDER` (3510 since 2026-10-05; was 1755) → `autoSliceFallback`;
 `useLimitWalk` (`order.execution.use-limit-walk`, application.properties:34, prod=true) →
 `placeGraduatedLimit` (:598-729); else `placeMarketCore` (:765-789).
 Returns `record ExecResult(String aggregateOrderIds /*comma-separated*/, int totalFilled,

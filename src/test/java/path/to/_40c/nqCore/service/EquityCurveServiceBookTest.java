@@ -48,6 +48,10 @@ class EquityCurveServiceBookTest {
         assertThat(curve.getStartingCapitals()).containsExactly(2_800_000.0);
     }
 
+    /**
+     * weekly legs: 650×(210−145) − 650×(154−120) = 20150 gross − 88 charges
+     * <p>monthly leg: 130×(267−212) = 7150 gross − 44 charges
+     */
     @Test
     @DisplayName("book view selects rows by that book's legs and accumulates ONLY that book's leg P&L")
     void bookViewIsLegScoped() {
@@ -55,11 +59,9 @@ class EquityCurveServiceBookTest {
         when(repo.findAllByOrderByOpenedAtAsc()).thenReturn(List.of(signal));
 
         EquityCurve weekly = service.getEquityCurveData("All", SYNTH_WEEKLY);
-        // weekly legs: 650×(210−145) − 650×(154−120) = 20150 gross − 88 charges
         assertThat(weekly.getEquity()).containsExactly(2_800_000.0 + 20150.0 - 88.0);
 
         EquityCurve monthly = service.getEquityCurveData("All", LONG_MONTHLY);
-        // monthly leg: 130×(267−212) = 7150 gross − 44 charges
         assertThat(monthly.getEquity()).containsExactly(2_800_000.0 + 7150.0 - 44.0);
     }
 

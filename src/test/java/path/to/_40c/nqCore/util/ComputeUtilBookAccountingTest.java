@@ -52,10 +52,13 @@ class ComputeUtilBookAccountingTest {
     // WIN/LOSS source
     // ---------------------------------------------------------------
 
+    /**
+     * 2 monthly lots (130 qty) bought at 212, sold at 205 after a +20-pt drift: spot won, theta
+     * lost.
+     */
     @Test
     @DisplayName("monthly theta bleed: +20 spot points but negative rupee PnL → LOSS (weekly rule would say WIN)")
     void monthlyThetaBledWinnerIsRupeeLoss() {
-        // 2 monthly lots (130 qty) bought at 212, sold at 205 after a +20-pt drift: spot won, theta lost.
         Position trade = monthlyTrade(24500.0, 24520.0);
         trade.setLegs(List.of(closedLeg("NIFTY26AUG24500CE", LONG_MONTHLY, BUY, 130, 2, 212.0, 205.0)));
 
@@ -68,10 +71,13 @@ class ComputeUtilBookAccountingTest {
         assertThat(trade.getResult()).isEqualTo(LOSS);
     }
 
+    /**
+     * +100 pts; leg gains 55 /unit on 130 qty = 7150 gross vs expected 65 × 100 = 6500 → capture
+     * &gt; 100%.
+     */
     @Test
     @DisplayName("monthly gamma winner: positive rupee PnL → WIN with capture measured against qty/2 × points")
     void monthlyGammaWinnerCapturesAgainstFuturesEquivalent() {
-        // +100 pts; leg gains 55 /unit on 130 qty = 7150 gross vs expected 65 × 100 = 6500 → capture > 100%.
         Position trade = monthlyTrade(24500.0, 24600.0);
         trade.setLegs(List.of(closedLeg("NIFTY26AUG24500CE", LONG_MONTHLY, BUY, 130, 2, 212.0, 267.0)));
 
